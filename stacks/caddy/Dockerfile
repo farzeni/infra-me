@@ -1,6 +1,8 @@
-ARG CADDY_VERSION=2.9.1
+ARG CADDY_VERSION=2.11.2
 
 FROM caddy:${CADDY_VERSION}-builder AS builder
+
+ENV GOTOOLCHAIN=auto
 
 RUN xcaddy build \
     --with github.com/lucaslorentz/caddy-docker-proxy/v2 \

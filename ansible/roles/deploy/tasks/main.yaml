@@ -44,7 +44,14 @@
     mode: "0600"
   no_log: true
 
+- name: Build caddy image
+  ansible.builtin.shell:
+    cmd: docker compose build caddy
+    chdir: "{{ stacks_dir }}/caddy"
+  when: caddy_rebuild | default(false) | bool
+  tags: [caddy_build]
+
 - name: Deploy caddy stack
   ansible.builtin.shell:
-    cmd: docker compose up -d --build
+    cmd: docker compose up -d
     chdir: "{{ stacks_dir }}/caddy"
