@@ -1,0 +1,5 @@
+---
+creation_rules:
+  - path_regex: stacks/.*\.env\.sops\.yaml$
+    age: >-
+      age1yy9zfg3k9n0zdg0e9p4gw6fu63uzy0w0zvve9n0ynd3vhqzn24dstnevny

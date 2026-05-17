@@ -2,10 +2,6 @@
 
 Self-hosted infrastructure on a single Hetzner dedicated server, managed via Ansible and Docker Compose.
 
-## Index
-
-- [Bootstrap](#bootstrap)
-
 ## Summary
 
 This repository contains the Ansible playbooks and roles for provisioning and managing the infrastructure stack. Each server goes through two phases:
@@ -14,6 +10,8 @@ This repository contains the Ansible playbooks and roles for provisioning and ma
 - **Deploy**: Ongoing service deployment (stacks, secrets, containers)
 
 Both test and production servers use the same playbooks — target via `--limit`.
+
+- [Bootstrap](#bootstrap)
 
 ## Bootstrap
 

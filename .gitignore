@@ -1,0 +1,7 @@
+# Decrypted secrets — never commit plaintext .env files
+stacks/**/.env
+
+# Editor artifacts
+.DS_Store
+*.swp
+*.swo

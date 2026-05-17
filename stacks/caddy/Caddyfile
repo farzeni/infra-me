@@ -1,0 +1,20 @@
+{
+	email fabrizio.arz@gmail.com
+	acme_dns cloudflare {env.CF_API_TOKEN}
+
+	log {
+		output stdout
+		format json
+	}
+
+	# caddy-docker-proxy reads this Caddyfile as base config;
+	# per-service routes are added dynamically via Docker labels.
+	# Admin endpoint stays on localhost only (caddy default).
+}
+
+# Smoke-test: curl http://<server-ip>/ping  (no DNS or TLS needed)
+:80 {
+	route /ping {
+		respond "pong" 200
+	}
+}

@@ -1,4 +1,50 @@
 ---
-- name: Placeholder — deploy role will be populated as stacks are built
-  ansible.builtin.debug:
-    msg: "Deploy role is a placeholder. Add stack deployment tasks here."
+- name: Create stacks root directory
+  ansible.builtin.file:
+    path: "{{ stacks_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure proxy Docker network exists
+  ansible.builtin.command:
+    cmd: docker network create --ipv6 proxy
+  register: network_result
+  failed_when:
+    - network_result.rc != 0
+    - '"already exists" not in network_result.stderr'
+  changed_when: network_result.rc == 0
+
+# ── Caddy ──────────────────────────────────────────────────────────────────
+
+- name: Create caddy stack directory
+  ansible.builtin.file:
+    path: "{{ stacks_dir }}/caddy"
+    state: directory
+    mode: "0755"
+
+- name: Sync caddy stack files
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../stacks/caddy/"
+    dest: "{{ stacks_dir }}/caddy/"
+    mode: preserve
+
+- name: Decrypt caddy secrets locally
+  ansible.builtin.shell:
+    cmd: sops --decrypt {{ playbook_dir }}/../stacks/caddy/.env.sops.yaml
+  delegate_to: localhost
+  become: false
+  no_log: true
+  changed_when: false
+  register: caddy_env
+
+- name: Write caddy secrets
+  ansible.builtin.copy:
+    content: "{{ caddy_env.stdout }}"
+    dest: "{{ stacks_dir }}/caddy/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy caddy stack
+  ansible.builtin.shell:
+    cmd: docker compose up -d --build
+    chdir: "{{ stacks_dir }}/caddy"

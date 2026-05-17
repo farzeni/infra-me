@@ -1,0 +1,43 @@
+---
+networks:
+  proxy:
+    external: true
+  caddy_internal:
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      CONTAINERS: "1"
+    networks:
+      - caddy_internal
+
+  caddy:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      CF_API_TOKEN: ${CF_API_TOKEN}
+      CADDY_INGRESS_NETWORKS: proxy
+      CADDY_DOCKER_CADDYFILE_PATH: /etc/caddy/Caddyfile
+      DOCKER_HOST: tcp://socket-proxy:2375
+    networks:
+      - proxy
+      - caddy_internal
