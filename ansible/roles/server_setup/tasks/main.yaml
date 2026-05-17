@@ -1,0 +1,71 @@
+---
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+  tags: [server_setup]
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ packages }}"
+    state: present
+    update_cache: true
+  tags: [server_setup]
+
+- name: Enable unattended-upgrades
+  ansible.builtin.systemd:
+    name: unattended-upgrades
+    state: started
+    enabled: true
+  when: unattended_upgrades.enabled
+  tags: [server_setup]
+
+- name: Create fabri user
+  ansible.builtin.user:
+    name: "{{ ssh_user }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    create_home: true
+  tags: [server_setup]
+
+- name: Set NOPASSWD sudo for fabri
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/{{ ssh_user }}
+    line: "{{ ssh_user }} ALL=(ALL) NOPASSWD:ALL"
+    validate: 'visudo -cf %s'
+    create: true
+    mode: "0440"
+  tags: [server_setup]
+
+- name: Deploy SSH authorized key for fabri
+  ansible.posix.authorized_key:
+    user: "{{ ssh_user }}"
+    state: present
+    key: "{{ lookup('file', ssh_key_file) }}"
+  tags: [server_setup]
+
+- name: Harden SSH configuration
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+    validate: 'sshd -t -f %s'
+  loop:
+    - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin prohibit-password" }
+    - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
+    - { regexp: "^#?PubkeyAuthentication", line: "PubkeyAuthentication yes" }
+    - { regexp: "^#?PermitEmptyPasswords", line: "PermitEmptyPasswords no" }
+    - { regexp: "^#?ChallengeResponseAuthentication", line: "ChallengeResponseAuthentication no" }
+  notify: Restart sshd
+  tags: [server_setup]
+
+- name: Apply sysctl hardening
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ sysctl | dict2items }}"
+  tags: [server_setup]

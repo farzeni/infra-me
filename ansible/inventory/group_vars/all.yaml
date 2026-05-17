@@ -1,0 +1,27 @@
+---
+ansible_python_interpreter: /usr/bin/python3
+
+ssh_user: fabri
+ssh_key_file: "{{ lookup('env', 'HOME') }}/.ssh/id_ed25519.pub"
+
+timezone: Europe/Rome
+
+packages:
+  - vim
+  - git
+  - curl
+  - wget
+  - jq
+  - htop
+  - unattended-upgrades
+
+unattended_upgrades:
+  enabled: true
+  auto_reboot: false
+
+sysctl:
+  net.ipv4.tcp_syncookies: "1"
+  net.ipv4.conf.all.accept_redirects: "0"
+  net.ipv4.conf.all.send_redirects: "0"
+  net.ipv4.conf.all.accept_source_route: "0"
+  net.ipv4.conf.all.log_martians: "1"

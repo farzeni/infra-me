@@ -1,0 +1,9 @@
+---
+- name: Bootstrap server
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - server_setup
+    - docker
+    - security

@@ -1,0 +1,4 @@
+---
+- name: Placeholder — deploy role will be populated as stacks are built
+  ansible.builtin.debug:
+    msg: "Deploy role is a placeholder. Add stack deployment tasks here."
