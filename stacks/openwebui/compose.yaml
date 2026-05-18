@@ -1,0 +1,27 @@
+---
+networks:
+  proxy:
+    external: true
+
+volumes:
+  openwebui_data:
+
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:0.6.13
+    restart: unless-stopped
+    environment:
+      - WEBUI_URL=${WEBUI_URL:-https://chat.askalotl.net}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-false}
+      - DEFAULT_USER_ROLE=${DEFAULT_USER_ROLE:-user}
+    env_file:
+      - .env
+    volumes:
+      - openwebui_data:/app/backend/data
+    networks:
+      - proxy
+    labels:
+      caddy: ${WEBUI_DOMAIN:-chat.askalotl.net}
+      caddy.reverse_proxy: "{{upstreams 8080}}"
+      caddy.tls: "on"

@@ -1,0 +1,17 @@
+{
+	email fabrizio.arz@gmail.com
+	local_certs
+
+	log {
+		output stdout
+		format json
+	}
+
+	# caddy-docker-proxy reads this as base config; per-service routes added via Docker labels.
+}
+
+:80 {
+	route /ping {
+		respond "pong" 200
+	}
+}

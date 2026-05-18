@@ -1,5 +1,18 @@
----
+# SOPS configuration
+# age public key is safe to commit — only the private key (on server + physical backup) can decrypt.
+#
+# Generate a key pair:
+#   age-keygen -o /root/.config/sops/age/keys.txt
+#   # Public key is printed to stdout; paste it below.
+#
+# Encrypt a .env file:
+#   sops --encrypt --input-type dotenv --output-type dotenv .env > .env.sops
+#
+# Decrypt (done automatically by scripts/deploy.sh):
+#   sops --decrypt --input-type dotenv --output-type dotenv .env.sops > .env
+
 creation_rules:
-  - path_regex: stacks/.*\.env\.sops\.yaml$
-    age: >-
-      age1yy9zfg3k9n0zdg0e9p4gw6fu63uzy0w0zvve9n0ynd3vhqzn24dstnevny
+  - path_regex: stacks/[^/]+/\.env\.sops$
+    key_groups:
+      - age:
+          - age1REPLACE_WITH_YOUR_AGE_PUBLIC_KEY

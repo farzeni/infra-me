@@ -6,7 +6,6 @@ SERVER_TYPE="cpx32"
 IMAGE="debian-13"
 LOCATION="nbg1"
 HCLOUD_CONTEXT="infra-me"
-INVENTORY_FILE="$(git rev-parse --show-toplevel)/ansible/inventory/hosts.yaml"
 
 export HCLOUD_CONTEXT
 
@@ -59,12 +58,7 @@ cmd_up() {
   server_ip="$(hcloud server describe "${SERVER_NAME}" -o format='{{.PublicNet.IPv4.IP}}')"
   echo ""
   echo "IP: ${server_ip}"
-
-  # Update Ansible inventory with the new IP
-  if [[ -f "${INVENTORY_FILE}" ]]; then
-    sed -i "/infra-test:/,/ansible_user:/{s/ansible_host: TBD/ansible_host: ${server_ip}/}" "${INVENTORY_FILE}"
-    echo "Updated Ansible inventory with IP ${server_ip}"
-  fi
+  echo "Update TEST_HOST in Makefile: root@${server_ip}"
 }
 
 cmd_down() {
@@ -76,12 +70,6 @@ cmd_down() {
   echo "Deleting server '${SERVER_NAME}'..."
   hcloud server delete "${SERVER_NAME}"
   echo "Done."
-
-  # Reset Ansible inventory IP
-  if [[ -f "${INVENTORY_FILE}" ]]; then
-    sed -i "/infra-test:/,/^$/s/ansible_host: .*/ansible_host: TBD/" "${INVENTORY_FILE}"
-    echo "Reset Ansible inventory IP to TBD"
-  fi
 }
 
 [[ $# -ne 1 ]] && usage

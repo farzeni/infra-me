@@ -1,7 +1,0 @@
----
-- name: Deploy infrastructure
-  hosts: all
-  become: true
-  gather_facts: true
-  roles:
-    - deploy

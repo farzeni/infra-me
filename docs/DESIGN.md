@@ -2,7 +2,7 @@
 
 This document captures the architectural decisions for this self-hosted infrastructure, including the reasoning behind each choice. It serves as both a reference for the operator and a guide for future evolution.
 
-Last updated: 2026-05-17
+Last updated: 2026-05-18
 
 ## 1. Goals and Non-Goals
 
@@ -77,25 +77,29 @@ LLM inference uses commercial APIs (Anthropic, OpenAI) configured with opt-out f
 
 ## 4. Orchestration
 
-### Decision: Docker Compose + Ansible + Git (GitOps-style)
+### Decision: Docker Compose + bootstrap.sh + Git (GitOps-style)
 
-The orchestration approach is intentionally simple: Docker Compose files per stack, version controlled in Git, deployed via Ansible. Configuration is the source of truth in Git; the server is execution.
+The orchestration approach is intentionally simple: Docker Compose files per stack, version controlled in Git, deployed via a shell script that runs on the server. Configuration is the source of truth in Git; the server is execution.
+
+There is no configuration management tool (Ansible, Chef, Puppet). Initial server setup is handled by `bootstrap.sh`, a plain bash script that runs once as root. Ongoing deploys are handled by `scripts/deploy.sh`, which runs on the server itself (triggered remotely via SSH from the operator's laptop). This keeps the toolchain minimal: bash, git, sops, docker.
 
 ### Alternatives Rejected
 
-**Kubernetes / K3s**: Originally considered (operator has K8s experience and started migration from Swarm). Rejected for this scope because: orchestration value of K8s shines with multiple nodes, autoscaling, rolling deployments — none of which apply to single-host family workload. The complexity tax is not paid back. K8s remains the right choice for the operator's professional work; this is intentionally different.
+**Kubernetes / K3s**: Originally considered (operator has K8s experience). Rejected because orchestration value of K8s shines with multiple nodes, autoscaling, rolling deployments — none of which apply to a single-host personal workload. The complexity tax is not paid back.
 
-**Docker Swarm**: Operator's current setup, explicitly unsatisfactory. Maintenance mode by Docker Inc., minimal active development.
+**Docker Swarm**: Operator's previous setup, explicitly unsatisfactory. Maintenance mode by Docker Inc.
 
 **Portainer**: Adds UI but obscures what is happening underneath. Operator prefers direct control.
 
-**Coolify and similar PaaS-on-self-hosted (Dokploy, CapRover)**: Considered seriously. Would accelerate initial setup significantly. Rejected because GitOps purity is a stated value: configuration must live in Git, not in a control plane database. Coolify's hybrid model (some state in UI database) was deemed unsuitable. Decision is to invest more time in setup for clearer long-term operational model.
+**Coolify and similar PaaS-on-self-hosted (Dokploy, CapRover)**: Rejected because GitOps purity is a stated value: configuration must live in Git, not in a control plane database.
 
-**Proxmox + VMs**: Considered for environment isolation. Rejected because the server hosts a single family environment; the abstraction layer would add complexity without isolation benefit. Reconsidered only if future use adds heterogeneous workloads (personal projects requiring isolation from family services).
+**Ansible**: Used in an earlier iteration for bootstrap. Removed in favour of a plain bash script. Ansible adds a dependency on the operator's laptop (Python, collections, inventory files) without meaningful benefit for a one-time bootstrap of a single server. A bash script is more portable, easier to audit, and trivially run via `ssh root@host "bash -s" < bootstrap.sh`.
+
+**Proxmox + VMs**: Rejected because the server hosts a single personal environment; the abstraction layer adds complexity without isolation benefit.
 
 ### Pattern
 
-Each stack lives in its own directory under `stacks/`. A stack is self-contained: compose file, secrets template, configuration files, optional backup script. Stacks share a single Docker network `proxy` (externally created) for ingress. Each stack has its own internal network for database/cache traffic, isolated from other stacks.
+Each stack lives in its own directory under `stacks/`. A stack is self-contained: `compose.yaml`, `.env.example` (local defaults), `.env.sops` (encrypted prod secrets), configuration files, `backup.sh`. Stacks share a single Docker network `proxy` (externally created) for ingress. Each stack has its own internal network for database/cache traffic, isolated from other stacks.
 
 ## 5. Networking and Ingress
 
@@ -119,56 +123,57 @@ Caddy serves as the only public-facing reverse proxy. It terminates TLS, handles
 - Cloudflare proxy disabled (DNS-only mode, "grey cloud") to allow direct TLS termination at Caddy and avoid layer-7 caching issues with WebSocket and streaming services
 - API token scoped to `Zone:DNS:Edit` on the specific zone, used by Caddy for DNS-01 ACME challenges
 
-## 6. Authentication and SSO
+## 6. Authentication
 
-### Decision: Authelia with OIDC Provider
+### Decision: Native auth per service, no SSO
 
-Authelia handles authentication. It supports password + TOTP (2FA) and acts as OIDC provider for services that support OIDC, eliminating the need for forward-auth in most cases.
+Each service handles its own authentication. There is no central identity provider or SSO layer.
 
-### Service Auth Strategy
+### Rationale
 
-- **OIDC integration**: LibreChat, Immich, Nextcloud (if added), Forgejo, Hedgedoc
-- **Native auth, no SSO**: Vaultwarden (deliberate: must work independently of identity provider for emergency password recovery)
-- **No auth (internal only)**: Monitoring dashboards behind a separate hostname not exposed publicly, or accessible via Tailscale only
+At the current service count (2 active stacks), the complexity of running a separate identity provider (Authelia, Authentik, Keycloak) is not justified. Each service has one or two users; the friction of separate logins is negligible. Self-registration is disabled on all public-facing services.
 
-### User Management
+Services requiring isolation (Vaultwarden, if added) benefit from being independent of any identity provider — the password manager must be accessible even if other services are broken.
 
-File-based user database in Authelia (`users.yml`), with argon2id password hashes. For a small user base this is more reliable than running LDAP. Users are created by the operator; self-registration is disabled across all services.
+### Revisit Criteria
+
+Add an identity provider if: (a) service count exceeds ~8 and cross-service login friction is a real daily problem, or (b) a service with no usable native auth is added. Authelia (~50MB RAM, SQLite) or Pocket-ID (passkey-only) are the candidates at that point.
 
 ### Alternatives Rejected
 
-**Authentik**: More mature OIDC provider, better admin UI. Rejected because heavier (Postgres + Redis + worker + server, ~500MB RAM vs Authelia ~50MB) and overkill for this scale.
+**Authelia**: Used in an earlier iteration. Removed because it added significant operational surface (configuration, TOTP setup, OIDC client registration per service, users database management) for a benefit that does not exist at the current scale.
+
+**Authentik**: Heavier (Postgres + Redis + worker, ~500MB RAM). Same objection as Authelia at higher resource cost.
 
 **Keycloak**: Enterprise-grade, far more complex than needed.
 
-**Pocket-ID**: Passkey-only, interesting but excludes users who prefer password+TOTP.
-
-**No SSO at all**: Each service with its own auth. Rejected because as the service count grows (10+), the friction of separate accounts becomes a real usability problem.
-
 ## 7. Secrets Management
 
-### Decision: SOPS with age
+### Decision: SOPS-encrypted .env files in Git (age backend)
 
-Secrets are encrypted at rest in the Git repository using SOPS with age keys. Only the operator's age private key can decrypt. The private key is stored locally and backed up to physical paper in a sealed envelope.
+Each stack has a `.env.sops` file committed to the repository. It is a dotenv-format file encrypted with SOPS using an age key. The age public key is in `.sops.yaml` (safe to commit). The age private key lives only on the server (`/root/.config/sops/age/keys.txt`) and in the physical recovery envelope.
 
 ### Pattern
 
-- `.env.sops.yaml` files exist for each stack, encrypted in Git
-- During deployment, Ansible decrypts to `.env` files on the server (gitignored, file mode 600)
-- Encrypted YAML keeps keys visible (only values are encrypted), enabling meaningful Git diffs
-- Master key file `~/.config/sops/age/keys.txt` on operator's laptop, never committed
+- `.env.sops` files are encrypted with: `sops --encrypt --input-type dotenv --output-type dotenv .env > .env.sops`
+- `scripts/deploy.sh` decrypts automatically before each deploy: `sops --decrypt --input-type dotenv --output-type dotenv .env.sops > .env`
+- `.env` (decrypted) is gitignored; only `.env.sops` is committed
+- `.env.example` in each stack provides working local defaults (`*.localhost` URLs, relaxed settings) — `cp .env.example .env` gives a runnable local stack without any secrets
+- To update a secret: edit `.env`, re-encrypt to `.env.sops`, commit
+
+### Rationale
+
+Keeping encrypted secrets in Git means the repo is the complete source of truth: a fresh server needs only the age private key and a `git clone` to be fully operational. This simplifies disaster recovery (no separate secrets restore step, no risk of secrets being out of sync with config). The age key is the single secret that must be protected out-of-band.
 
 ### Alternatives Considered
 
-**HashiCorp Vault**: Industrial strength but requires running another service with HA considerations. Overkill.
+**Server-side .env files only**: Simpler initially — no encryption tooling. Rejected because it splits the source of truth: config in Git, secrets in Restic. During recovery, the operator must restore backups before stacks can start. Secrets can silently diverge from the config they belong to.
 
-**External Secrets Operator + cloud KMS**: Requires cloud KMS backend, adds dependency.
+**HashiCorp Vault**: Industrial strength but requires running another service. Overkill for a single-operator setup.
 
-**Encrypted .env files (e.g. ansible-vault)**: Ties secrets to Ansible specifically. SOPS is more portable.
+**Doppler / Infisical**: Good ergonomics but adds an external dependency or another service to maintain.
 
-**ejson (Shopify)**: Same family as SOPS, less feature-rich, less actively maintained.
-
-**Plaintext + gitignore**: Loses version history of secret changes, no way to share with a co-maintainer.
+**Plaintext in Git**: Not acceptable.
 
 ## 8. Backup Strategy
 
@@ -199,36 +204,37 @@ PostgreSQL and MongoDB do not guarantee filesystem consistency at any given mome
 
 ## 9. Services (Initial Deployment)
 
-The initial deployment includes services in priority order. Each service is added incrementally during the test phase, then deployed to production once stable.
+Services are added incrementally: test environment first, then production once stable.
 
-### Tier 1: Core Services (deploy first)
+### Active
 
-1. **Caddy** — TLS, ingress, reverse proxy
-2. **Authelia + Redis** — authentication and SSO
-3. **Vaultwarden** — password manager (independent auth, no SSO)
-4. **LibreChat + MongoDB + Meilisearch** — LLM gateway with local conversation history
-5. **Immich + Postgres + Redis + ML** — photo library
-6. **SearXNG** — meta search engine
-7. **Uptime Kuma** — service monitoring
+1. **Caddy** — TLS termination, ingress, reverse proxy (caddy-docker-proxy for label-based routing)
+2. **Open WebUI** — AI chat interface (Anthropic, OpenAI APIs; native auth, no SSO)
 
-### Tier 2: Educational Services (add within first few months)
+### Planned (Tier 1)
 
-8. **Kiwix** — offline Wikipedia (IT/EN), Khan Academy, Project Gutenberg
-9. **Hedgedoc** — collaborative markdown notes
-10. **Forgejo** — private Git
-11. **Audiobookshelf** — audiobooks and podcasts
+3. **Vaultwarden** — password manager (native auth, deliberately no SSO)
+4. **Immich + Postgres + Redis + ML** — photo library
+5. **SearXNG** — meta search engine
+6. **Uptime Kuma** — service monitoring
 
-### Tier 3: Optional (only if justified by real need)
+### Planned (Tier 2, educational)
 
-12. **Nextcloud** — file sharing
-13. **Jellyfin** — media library
-14. **Matrix Synapse** — federated chat
+7. **Kiwix** — offline Wikipedia (IT/EN), Khan Academy, Project Gutenberg
+8. **Audiobookshelf** — audiobooks and podcasts
+9. **Forgejo** — private Git
 
-### Explicitly Excluded
+### Optional (Tier 3, only if justified by real need)
 
-- **Self-hosted email**: deliverability is a continuous battle; professional providers (Proton, Tutanota) solve this better
-- **Mastodon, Pixelfed, social network self-hosting**: federation complexity and moderation burden not justified at this scale
-- **Self-hosted video conferencing**: quality inferior to commercial options
+10. **Nextcloud** — file sharing
+11. **Jellyfin** — media library
+
+### Deliberately Excluded
+
+- **SSO / Identity provider (Authelia, Authentik, Keycloak)**: Added unnecessary complexity for the service count. Each service uses its own native auth. Revisit only if service count grows significantly and cross-service login friction becomes a real problem.
+- **LibreChat**: Replaced by Open WebUI, which covers the same use case with a simpler stack (no MongoDB, no Meilisearch, no separate RAG service).
+- **Self-hosted email**: deliverability is a continuous battle; professional providers solve this better.
+- **Matrix Synapse, Mastodon, Pixelfed**: federation complexity not justified at this scale.
 
 ## 10. AI Access (LibreChat)
 
@@ -245,9 +251,9 @@ LibreChat serves as the interface to commercial LLM APIs (Anthropic, OpenAI). Ea
 
 ## 11. Domain and Naming
 
-### Decision: Single domain `askalotl.com`
+### Decision: Single domain `askalotl.net`
 
-A single domain hosts all services as subdomains: `chat.askalotl.com`, `auth.askalotl.com`, `photos.askalotl.com`, etc. Wildcard certificate via Let's Encrypt.
+A single domain hosts all services as subdomains: `chat.askalotl.net`, `auth.askalotl.net`, `photos.askalotl.net`, etc. Wildcard certificate via Let's Encrypt.
 
 ### Naming Criteria
 
@@ -281,22 +287,28 @@ If patterns emerge that require deeper observability (frequent issues, performan
 ### Initial Deployment
 
 1. Order Hetzner EX44, install Debian 13 via installimage with RAID1 software, custom partitioning (`/`, `/var/lib/docker`, `/srv/data` separate)
-2. Run `bootstrap.sh` (manual first time, automated for subsequent servers): user creation, SSH hardening, firewall (ufw), fail2ban, Docker installation, unattended security upgrades, base packages
-3. Provision age key on server
-4. Clone `infra/` repo
-5. Run Ansible playbook from operator's laptop
-6. Update DNS to point to server
-7. Verify each service end-to-end
+2. Run `bootstrap.sh` as root: user creation, SSH hardening, firewall (ufw + ufw-docker), fail2ban, sysctl, Docker CE, `proxy` network, repo clone
+   ```bash
+   make bootstrap ENV=test REPO_URL=https://github.com/user/infra-me.git
+   ```
+3. Copy age private key to server: `/root/.config/sops/age/keys.txt` (mode 600)
+4. Deploy stacks:
+   ```bash
+   make deploy ENV=test
+   ```
+5. Update DNS to point to server
+6. Verify each service end-to-end
 
 ### Ongoing Deployments
 
-- Configuration changes: edit files in `infra/` repo, commit, push, run `ansible-playbook deploy.yaml`
-- Service updates: bump image tags in compose files, `ansible-playbook` with pull policy applies new images
-- Schedule: monthly review of available updates, applied on a planned maintenance window (typically weekend evening)
+- Configuration changes: edit files in repo, commit, push, `make deploy`
+- Service updates: bump image tags in compose files, `make deploy-<stack>`
+- Secret changes: edit `.env`, re-encrypt to `.env.sops`, commit, `make deploy-<stack>`
+- Schedule: monthly review of available updates, applied on a planned maintenance window
 
 ### Testing
 
-A separate Hetzner Cloud CX22 (4€/month, destroyed after use) serves as the test environment during initial development. The full repo and Ansible playbook target the test VPS first. Only after the entire flow works end-to-end on the test VPS does the operator order the production EX44 and deploy there. This minimizes paid time on the production server and validates the disaster recovery procedure simultaneously.
+A separate Hetzner Cloud CX22 (4€/month, destroyed after use) serves as the test environment during initial development. The full repo targets the test VPS first. Only after the entire flow works end-to-end on the test VPS does the operator provision production. This minimises paid time on the production server and validates the disaster recovery procedure simultaneously.
 
 ## 14. Disaster Recovery
 
@@ -313,29 +325,27 @@ Daily backups are sufficient. Critical data (Vaultwarden) is small and dumped da
 The full procedure lives in `DISASTER_RECOVERY.md`. High-level:
 
 1. Provision new Hetzner server (Debian 13)
-2. Restore age key and restic credentials from physical envelope
-3. Clone `infra/` repo
-4. Run `bootstrap.sh`
-5. Restore `/srv/data` and dump directory from Restic
-6. Decrypt SOPS files
-7. Start stacks: Caddy, Authelia, Vaultwarden first (no DB restore needed for Vaultwarden as it uses SQLite restored with data; Authelia same)
-8. Update DNS to new server IP
-9. For each database stack: start DB container, restore from dump, start application
-10. Verify functionally
-11. Resume backup schedule
+2. Restore age private key and restic credentials from physical envelope
+3. Run `bootstrap.sh` (clones the repo, installs Docker, hardens the server)
+4. Copy age private key to `/root/.config/sops/age/keys.txt`
+5. Run `make deploy` — deploy.sh decrypts secrets and starts all stacks
+6. Restore database dumps from Restic into each stack's staging directory, replay via each stack's restore procedure
+7. Update DNS to new server IP
+8. Verify functionally
+9. Resume backup schedule
 
 ### Critical Off-Server Recovery Materials
 
 Physical sealed envelope in a safe location contains:
-- Age private key (one-time generated, ~70 characters)
+- **age private key** (decrypts all `.env.sops` files in the repo)
 - Restic password
-- Hetzner Robot account recovery
+- Hetzner Robot account recovery codes
 - Cloudflare account 2FA recovery codes
 - Backblaze B2 application keys
 - GitHub account 2FA recovery codes
 - Operator's printed copy of `DISASTER_RECOVERY.md`
 
-Without these materials, recovery is impossible. Their existence is the single most important piece of operational hygiene.
+Without the age private key, no stack can start (all secrets are encrypted). Without these materials, full recovery is impossible. Their existence and accuracy is the single most important piece of operational hygiene.
 
 ## 15. Cost Estimate
 

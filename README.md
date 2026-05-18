@@ -1,92 +1,97 @@
 # infra-me
 
-Self-hosted infrastructure on a single Hetzner dedicated server, managed via Ansible and Docker Compose.
-
-## Summary
-
-This repository contains the Ansible playbooks and roles for provisioning and managing the infrastructure stack. Each server goes through two phases:
-
-- **Bootstrap**: One-time server initialization (user setup, SSH hardening, Docker, firewall, fail2ban)
-- **Deploy**: Ongoing service deployment (stacks, secrets, containers)
-
-Both test and production servers use the same playbooks — target via `--limit`.
-
-- [Bootstrap](#bootstrap)
-
-## Bootstrap
-
-Run once on a fresh server to provision the base system.
-
-### Prerequisites
-
-Create the test server via `test-server.sh` — this also syncs the IP into the Ansible inventory:
-
-```bash
-./scripts/test-server.sh up    # creates server, updates inventory
-./scripts/test-server.sh down  # deletes server, resets inventory to TBD
-```
-
-```bash
-# Bootstrap all servers
-ansible-playbook bootstrap.yaml
-
-# Bootstrap test server only
-ansible-playbook bootstrap.yaml --limit infra-test
-
-# Bootstrap production server only
-ansible-playbook bootstrap.yaml --limit infra-prod
-
-# Run specific roles only
-ansible-playbook bootstrap.yaml --limit infra-test --tags server_setup
-ansible-playbook bootstrap.yaml --limit infra-test --tags docker
-ansible-playbook bootstrap.yaml --limit infra-test --tags security
-
-# Dry run (check mode)
-ansible-playbook bootstrap.yaml --limit infra-test --check --diff
-```
-
-### What bootstrap does
-
-| Role | Tasks |
-|------|-------|
-| `server_setup` | Timezone, base packages, unattended-upgrades, `fabri` user + NOPASSWD sudo, SSH key auth, SSH hardening, sysctl tuning |
-| `docker` | Docker CE + compose-plugin, `proxy` network, `fabri` in docker group |
-| `security` | UFW (allow 22/80/443), fail2ban SSH jail |
-
-## Deploy
-
-Ongoing service deployments (populated as stacks are built).
-
-```bash
-ansible-playbook deploy.yaml --limit infra-test
-```
-
-## Inventory
-
-| Server | Group | Status |
-|--------|-------|--------|
-| `infra-test` | test | Active |
-| `infra-prod` | production | Pending |
+Self-hosted infrastructure on a single Hetzner dedicated server, managed via Docker Compose and shell scripts.
 
 ## Structure
 
 ```
+stacks/                    # One directory per service stack
+  caddy/
+  openwebui/
+  ...                      # each stack: compose.yaml, .env.example, .env.sops, backup.sh
+bootstrap.sh               # One-time server setup (run as root)
+run.sh                     # Start stacks locally or in production
 scripts/
-├── test-server.sh         # Create/destroy test server, syncs IP to inventory
-└── install-deps.sh        # Install SOPS, age, hcloud CLI
-ansible/
-├── ansible.cfg
-├── bootstrap.yaml
-├── deploy.yaml
-├── inventory/
-│   ├── hosts.yaml
-│   └── group_vars/
-│       ├── all.yaml
-│       ├── test.yaml
-│       └── production.yaml
-└── roles/
-    ├── server_setup/
-    ├── docker/
-    ├── security/
-    └── deploy/
+  test-server.sh           # Create/destroy Hetzner test server
+  install-deps.sh          # Install hcloud CLI on laptop
+Makefile                   # Remote deploy triggers via SSH
+.sops.yaml                 # SOPS age key config
+docs/
+  DESIGN.md
 ```
+
+## Local dev
+
+```bash
+./run.sh local all
+./run.sh local caddy openwebui
+./run.sh status
+```
+
+On first run, `.env.example` is copied to `.env` automatically. Services are available at `https://*.localhost` (Caddy uses a local self-signed CA — trust it once with `caddy trust`).
+
+## Test server
+
+```bash
+./scripts/install-deps.sh          # install hcloud CLI (once)
+./scripts/test-server.sh up        # create CX22 test server
+./scripts/test-server.sh down      # destroy it
+```
+
+Update `TEST_HOST` in `Makefile` with the printed IP after `up`.
+
+## Bootstrap
+
+Run once on a fresh server:
+
+```bash
+make bootstrap ENV=test REPO_URL=https://github.com/user/infra-me.git
+```
+
+Covers: timezone, base packages, `fabri` user, SSH hardening, sysctl, UFW (22/80/443), fail2ban, Docker CE, `proxy` network, repo clone.
+
+After bootstrap, copy the age private key to the server:
+
+```bash
+scp /path/to/age-key.txt root@<host>:/root/.config/sops/age/keys.txt
+```
+
+## Secrets
+
+Secrets live in `.env.sops` files — dotenv format, encrypted with SOPS (age backend), committed to Git. The age public key is in `.sops.yaml`.
+
+```bash
+# Create or update a secret:
+cd stacks/<stack>
+cp .env.example .env
+vim .env                  # fill in real values
+sops --encrypt --input-type dotenv --output-type dotenv .env > .env.sops
+git add .env.sops && git commit
+
+# Generate age key pair (once, store private key off-server):
+age-keygen -o keys.txt    # public key → paste into .sops.yaml
+```
+
+## Deploy
+
+```bash
+# Deploy all stacks to test
+make deploy
+
+# Deploy specific stacks
+make deploy-caddy
+make deploy-openwebui ENV=prod
+
+# Status
+make status
+make status ENV=prod
+```
+
+`make deploy` SSHes into the server, pulls the latest Git commit, then runs `./run.sh prod` which decrypts `.env.sops → .env` and does `docker compose up`.
+
+## Servers
+
+| Name | ENV | Host |
+|------|-----|------|
+| infra-test | test | 46.225.170.110 |
+| infra-prod | prod | TBD |
